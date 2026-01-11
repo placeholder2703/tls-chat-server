@@ -1,3 +1,4 @@
+// basic client i dont work on it much, run with "node client.mjs <replace-wih-token>"
 import tls from "tls";
 import readline from "node:readline";
 const token = process.argv[2];
@@ -44,14 +45,12 @@ function handle(msg) {
 // code your payload here
 socket.on("connect", () => {
   send({ type: "HELLO", token: token });
-//  const rl = readline.createInterface({
-//    input: process.stdin,
-//   output: process.stdout
-//  });
-//  rl.on("line", line => {
-  setInterval(() => {
-    send({ type: "DATA", DATA: "packet" });
-  }, 500)
-//  });
+  const rl = readline.createInterface({
+    input: process.stdin,
+   output: process.stdout
+  });
+  rl.on("line", line => {
+    send({ type: "DATA", DATA: line });
+  });
 });
 
