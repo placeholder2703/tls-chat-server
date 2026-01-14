@@ -1,4 +1,10 @@
 {
-  "delulu": "John Doe",
-  "solulu": "Jane Doe"
+  "delulu": {
+    "username": "JohnDoe",
+    "secret": "AAAAAAAAAAAAAAAA"
+  },
+  "solulu": {
+    "username": "JaneDoe",
+    "secret": "AAAAAAAAAAAAAAAA"
+  }
 }
