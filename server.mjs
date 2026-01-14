@@ -1,15 +1,19 @@
 import tls from "tls";
 import fs from "fs";
 import readline from "node:readline";
+import { authenticator } from "otplib";
 let users = null
+
 function genToken() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let out = "";
   for (let i = 0; i < 32; i++) {
     out += chars.charAt(Math.floor(Math.random() * chars.length));}
   return out;}
+
 function updateUserList() {
   users = JSON.parse(fs.readFileSync("./users.json", "utf8"));}
+
 function isMalicious(str) {
   const regex = /^[A-Za-z0-9._-]{1,32}$/;
   return !regex.test(str);}
@@ -17,6 +21,7 @@ function isMalicious(str) {
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout});
+
 const clients = new Set();
 const server = tls.createServer({
   key: fs.readFileSync("./key.pem"),
@@ -39,6 +44,7 @@ const server = tls.createServer({
         socket.destroy();
         return;}
       handle(msg);}});
+
   rl.on("line", line => {
     const msg = line.trim();
     if (!msg) return;
@@ -79,60 +85,92 @@ const server = tls.createServer({
     if (msg.type === "SIGNUP") {
       const exists = Object.values(users).includes(msg.username);
       if (isMalicious(msg.username) || exists) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Username is invalid or already taken." });
+        send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already taken." });
         socket.end();
         return;}
+      const secret = authenticator.generateSecret();
       const token = genToken();
-      users[token] = msg.username;
+      users[token] = { username: msg.username, secret };
       fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      send(socket, { type: "DATA", DATA: `[SERVER] Successfully signed up.\nDO NOT share this auth token with ANYONE.\n${token}` });
+      send(socket, { type: "DATA", DATA: `[SERVER] Successfully signed up.\n[SERVER] DO NOT share these with ANYONE.\n[TOKEN] ${token}\n[SECRET] ${secret}` });
+      console.log(`${msg.username} signed in.`);
       socket.end();
       return;}
+
     if (msg.type === "RENAME") {
       const exists = Object.values(users).includes(msg.username);
       if (isMalicious(msg.username) || exists || !users[msg.token]) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Invalid username or already, or invalid token." });
+        send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already, or invalid token." });
         socket.end();
         return;}
-      users[msg.token] = msg.username;
+     if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+        socket.end();
+        return;}
+      const oldName = users[msg.token].username;
+      users[msg.token].username = msg.username;
       fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      send(socket, { type: "DATA", DATA: `[SERVER] Username changed to ${msg.username}` });
+      send(socket, { type: "DATA", DATA: `[SERVER] Username changed from ${oldName} to ${msg.username}` });
+      console.log(`Renamed ${oldName} to ${msg.username}`);
       socket.end();
       return;}
+
     if (msg.type === "RETOKEN") {
-      const username = users[msg.token];
-      if (typeof msg.token !== "string" || !username) {
+      if (typeof msg.token !== "string" || !users[msg.token]) {
         send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
         socket.end();
         return;}
-      const newToken = genToken();
+     if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+        socket.end();
+        return;}
+      const cur_username = users[msg.token].username;
+      const cur_secret = users[msg.token].secret;
       delete users[msg.token];
-      users[newToken] = username;
+      const newToken = genToken();
+      users[newToken] = { username: cur_username, secret: cur_secret };
+      users[newToken].secret = cur_secret;
       fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
       send(socket, { type: "DATA", DATA: `[SERVER] Token refreshed. New token:\n${newToken}\nAgain DO NOT share your token with ANYONE` });
+      console.log(`Retokened ${users[newToken].username}.`);
       socket.end();
       return;}
+
     if (msg.type === "DELETE") {
-      const username = users[msg.token];
-      if (!username) {
+      if (!users[msg.token]) {
         send(socket, { type: "DATA", DATA: "[SERVER] User doesn't exist." });
         socket.end();
         return;}
-      send(socket, { type: "DATA", DATA: `[SERVER] Successfully deleted ${username}` });
+     if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+        socket.end();
+        return;}
+      const username = users[msg.token].username;
       delete users[msg.token];
+      send(socket, { type: "DATA", DATA: `[SERVER] Successfully deleted ${username}` });
+      console.log(`Deleted ${username}.`)
       fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
       socket.end();
       return;}
+
     if (state === "INIT") {
+      if (!msg.code || !msg.token) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Missing token/otp" });
+        socket.end();
+        return;}
       if (msg.type !== "HELLO" || typeof msg.token !== "string") {
+        send(socket, { type: "DATA", DATA: "[SERVER] Don't be so rude, atleast say HELLO first!" })
         socket.end();
         return;}
-      const username = users[msg.token];
-      if (!username) {
-        send(socket, { type: "DATA", DATA: "Invalid token." });
+      if (!users[msg.token]) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
         socket.end();
         return;}
-      user = username;
+      if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+        send(socket, { type: "DATA", DATA: "[SERVER] Wrong OTP." });
+        socket.end();
+        return;}
+      user = users[msg.token].username;
       state = "READY";
       clients.add(socket);
       send(socket, { type: "DATA", DATA: `[SERVER] You've successfully authenticated as ${user}` });
@@ -140,13 +178,16 @@ const server = tls.createServer({
       broadcast(`[SERVER] ${user} went online.`);
       startKeepAliveFor(socket);
       return;}
+
     if (msg.type === "PONG") {
       if (socket._pong) socket._pong();
       return;}
+
     if (msg.type === "DATA") {
       console.log(`${user}: ${msg.DATA}`);
       broadcast(`${user}: ${msg.DATA}`);
       return;}
+
     if (msg.type === "CLOSE") {
       clients.delete(socket)
       console.log(`${user} went offline.`);
@@ -156,4 +197,5 @@ const server = tls.createServer({
 });
 
 updateUserList()
-server.listen(9000);
+server.listen(25565);
+console.log("[SERVER] Successfully started on port 25565.")
