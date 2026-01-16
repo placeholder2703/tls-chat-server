@@ -18,14 +18,30 @@ function isMalicious(str) {
   const regex = /^[A-Za-z0-9._-]{1,32}$/;
   return !regex.test(str);}
 
+function broadcast(text) {
+  console.log(text)
+  for (const client of clients) {
+    send(client, { type: "DATA", DATA: text });}}
+
+function send(socket, obj) {
+  const json = Buffer.from(JSON.stringify(obj));
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(json.length);
+  socket.write(Buffer.concat([header, json]));}
+
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout});
 
+rl.on("line", line => {
+  const msg = line.trim();
+  if (!msg) return;
+  broadcast(`[SERVER] ${msg}`);});
+
 const clients = new Set();
 const server = tls.createServer({
-  key: fs.readFileSync("./key.pem"),
-  cert: fs.readFileSync("./cert.pem")
+  key: fs.readFileSync("./private.key"),
+  cert: fs.readFileSync("./certificate.crt")
 }, socket => {
   let buffer = Buffer.alloc(0);
   let state = "INIT";
@@ -34,6 +50,10 @@ const server = tls.createServer({
     buffer = Buffer.concat([buffer, chunk]);
     while (buffer.length >= 4) {
       const length = buffer.readUInt32BE(0);
+      if (length > 3000) {
+        send(socket, { type: "DATA", DATA: "[SERVER] You've been kicked for exceeding 3000 characters." });
+        socket.destroy();
+        return;}
       if (buffer.length < 4 + length) break;
       const payload = buffer.slice(4, 4 + length);
       buffer = buffer.slice(4 + length);
@@ -45,41 +65,22 @@ const server = tls.createServer({
         return;}
       handle(msg);}});
 
-  rl.on("line", line => {
-    const msg = line.trim();
-    if (!msg) return;
-    console.log(`[SERVER] ${msg}`);
-    broadcast(`[SERVER] ${msg}`);});
-
   function startKeepAliveFor(socket) {
     let lastPong = Date.now();
     const interval = setInterval(() => {
       send(socket, { type: "PING" });
       if (Date.now() - lastPong > 15000) {
         clearInterval(interval);
-        console.log(`${user} got timed out.`);
         broadcast(`[SERVER] ${user} got timed out.`);
         socket.end();}}, 5000);
     socket.on("close", () => {
-      console.log(`${user} went offline.`);
       broadcast(`[SERVER] ${user} went offline.`);
       clearInterval(interval);})
     socket.on("error", () => {
-      console.log(`${user} crashed and went offline.`);
       broadcast(`[SERVER] ${user} crashed and went offline.`);
       clearInterval(interval);})
     socket._pong = () => {
       lastPong = Date.now();};}
-
-  function broadcast(text) {
-    for (const client of clients) {
-      send(client, { type: "DATA", DATA: text });}}
-
-  function send(socket, obj) {
-    const json = Buffer.from(JSON.stringify(obj));
-    const header = Buffer.alloc(4);
-    header.writeUInt32BE(json.length);
-    socket.write(Buffer.concat([header, json]));}
 
   function handle(msg) {
     if (msg.type === "SIGNUP") {
@@ -174,7 +175,6 @@ const server = tls.createServer({
       state = "READY";
       clients.add(socket);
       send(socket, { type: "DATA", DATA: `[SERVER] You've successfully authenticated as ${user}` });
-      console.log(`${user} went online.`);
       broadcast(`[SERVER] ${user} went online.`);
       startKeepAliveFor(socket);
       return;}
@@ -184,13 +184,11 @@ const server = tls.createServer({
       return;}
 
     if (msg.type === "DATA") {
-      console.log(`${user}: ${msg.DATA}`);
       broadcast(`${user}: ${msg.DATA}`);
       return;}
 
     if (msg.type === "CLOSE") {
       clients.delete(socket)
-      console.log(`${user} went offline.`);
       broadcast(`[SERVER] ${user} went offline.`);
       socket.end();}
   }
