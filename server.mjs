@@ -5,193 +5,211 @@ import { authenticator } from "otplib";
 let users = null
 
 function genToken() {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let out = "";
-  for (let i = 0; i < 32; i++) {
-    out += chars.charAt(Math.floor(Math.random() * chars.length));}
-  return out;}
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	let out = "";
+	for (let i = 0; i < 32; i++) {
+		out += chars.charAt(Math.floor(Math.random() * chars.length));}
+	return out;}
 
 function updateUserList() {
-  users = JSON.parse(fs.readFileSync("./users.json", "utf8"));}
+	users = JSON.parse(fs.readFileSync("./users.json", "utf8"));}
 
 function isMalicious(str) {
-  const regex = /^[A-Za-z0-9._-]{1,32}$/;
-  return !regex.test(str);}
+	const regex = /^[A-Za-z0-9._-]{1,32}$/;
+	return !regex.test(str);}
 
 function broadcast(text) {
-  console.log(text)
-  for (const client of clients) {
-    send(client, { type: "DATA", DATA: text });}}
+	console.log(text)
+	for (const client of clients) {
+		send(client, { type: "DATA", DATA: text });}}
 
 function send(socket, obj) {
-  const json = Buffer.from(JSON.stringify(obj));
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(json.length);
-  socket.write(Buffer.concat([header, json]));}
+	const json = Buffer.from(JSON.stringify(obj));
+	const header = Buffer.alloc(4);
+	header.writeUInt32BE(json.length);
+	socket.write(Buffer.concat([header, json]));}
 
 const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout});
+	input: process.stdin,
+	output: process.stdout});
 
 rl.on("line", line => {
-  const msg = line.trim();
-  if (!msg) return;
-  broadcast(`[SERVER] ${msg}`);});
+	const msg = line.trim();
+	if (!msg) return;
+	broadcast(`[SERVER] ${msg}`);});
 
 const clients = new Set();
 const server = tls.createServer({
-  key: fs.readFileSync("./private.key"),
-  cert: fs.readFileSync("./certificate.crt")
+	key: fs.readFileSync("./private.key"),
+	cert: fs.readFileSync("./certificate.crt")
 }, socket => {
-  let buffer = Buffer.alloc(0);
-  let state = "INIT";
-  let user = null;
-  socket.on("data", chunk => {
-    buffer = Buffer.concat([buffer, chunk]);
-    while (buffer.length >= 4) {
-      const length = buffer.readUInt32BE(0);
-      if (length > 3000) {
-        send(socket, { type: "DATA", DATA: "[SERVER] You've been kicked for exceeding 3000 characters." });
-        socket.destroy();
-        return;}
-      if (buffer.length < 4 + length) break;
-      const payload = buffer.slice(4, 4 + length);
-      buffer = buffer.slice(4 + length);
-      let msg;
-      try {
-        msg = JSON.parse(payload.toString("utf8"));
-      } catch {
-        socket.destroy();
-        return;}
-      handle(msg);}});
+	let buffer = Buffer.alloc(0);
+	let state = "INIT";
+	let user = null;
+	socket.on("data", chunk => {
+		buffer = Buffer.concat([buffer, chunk]);
+		while (buffer.length >= 4) {
+			const length = buffer.readUInt32BE(0);
+			if (length > 3000) {
+				send(socket, { type: "DATA", DATA: "[SERVER] You've been kicked for exceeding 3000 characters." });
+				socket.destroy();
+				return;}
+			if (buffer.length < 4 + length) break;
+			const payload = buffer.slice(4, 4 + length);
+			buffer = buffer.slice(4 + length);
+			let msg;
+			try {
+				msg = JSON.parse(payload.toString("utf8"));
+			} catch {
+				socket.destroy();
+				return;}
+			handle(msg);}});
 
-  function startKeepAliveFor(socket) {
-    let lastPong = Date.now();
-    const interval = setInterval(() => {
-      send(socket, { type: "PING" });
-      if (Date.now() - lastPong > 15000) {
-        clearInterval(interval);
-        broadcast(`[SERVER] ${user} got timed out.`);
-        socket.end();}}, 5000);
-    socket.on("close", () => {
-      broadcast(`[SERVER] ${user} went offline.`);
-      clearInterval(interval);})
-    socket.on("error", () => {
-      broadcast(`[SERVER] ${user} crashed and went offline.`);
-      clearInterval(interval);})
-    socket._pong = () => {
-      lastPong = Date.now();};}
+	function startKeepAliveFor(socket) {
+		let lastPong = Date.now();
+		const interval = setInterval(() => {
+			send(socket, { type: "PING" });
+			if (Date.now() - lastPong > 15000) {
+				clearInterval(interval);
+				broadcast(`[SERVER] ${user} got timed out.`);
+				socket.destroy();}}, 5000);
+		socket.on("close", () => {
+			broadcast(`[SERVER] ${user} went offline.`);
+			clearInterval(interval);})
+		socket.on("error", () => {
+			broadcast(`[SERVER] ${user} crashed and went offline.`);
+			clearInterval(interval);})
+		socket._pong = () => {
+			lastPong = Date.now();};}
 
-  function handle(msg) {
-    if (msg.type === "SIGNUP") {
-      const exists = Object.values(users).includes(msg.username);
-      if (isMalicious(msg.username) || exists) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already taken." });
-        socket.end();
-        return;}
-      const secret = authenticator.generateSecret();
-      const token = genToken();
-      users[token] = { username: msg.username, secret };
-      fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      send(socket, { type: "DATA", DATA: `[SERVER] Successfully signed up.\n[SERVER] DO NOT share these with ANYONE.\n[TOKEN] ${token}\n[SECRET] ${secret}` });
-      console.log(`${msg.username} signed in.`);
-      socket.end();
-      return;}
+	function handle(msg) {
+		if (msg.type === "SIGNUP") {
+			const exists = Object.values(users).includes(msg.username);
+			if (isMalicious(msg.username) || exists) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already taken." });
+				socket.destroy();
+				return;}
+			const secret = authenticator.generateSecret();
+			const token = genToken();
+			users[token] = { username: msg.username, secret };
+			fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
+			send(socket, { type: "DATA", DATA: `[SERVER] Successfully signed up.\n[SERVER] DO NOT share these with ANYONE.\n[TOKEN] ${token}\n[SECRET] ${secret}` });
+			console.log(`${msg.username} signed in.`);
+			socket.destroy();
+			return;}
 
-    if (msg.type === "RENAME") {
-      const exists = Object.values(users).includes(msg.username);
-      if (isMalicious(msg.username) || exists || !users[msg.token]) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already, or invalid token." });
-        socket.end();
-        return;}
-     if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
-        socket.end();
-        return;}
-      const oldName = users[msg.token].username;
-      users[msg.token].username = msg.username;
-      fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      send(socket, { type: "DATA", DATA: `[SERVER] Username changed from ${oldName} to ${msg.username}` });
-      console.log(`Renamed ${oldName} to ${msg.username}`);
-      socket.end();
-      return;}
+		if (msg.type === "RENAME") {
+			const exists = Object.values(users).includes(msg.username);
+			if (isMalicious(msg.username) || exists || !users[msg.token]) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Bad username or already, or invalid token." });
+				socket.destroy();
+				return;}
+		 if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+				socket.destroy();
+				return;}
+			const oldName = users[msg.token].username;
+			users[msg.token].username = msg.username;
+			fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
+			send(socket, { type: "DATA", DATA: `[SERVER] Username changed from ${oldName} to ${msg.username}` });
+			console.log(`Renamed ${oldName} to ${msg.username}`);
+			socket.destroy();
+			return;}
 
-    if (msg.type === "RETOKEN") {
-      if (typeof msg.token !== "string" || !users[msg.token]) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
-        socket.end();
-        return;}
-     if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
-        socket.end();
-        return;}
-      const cur_username = users[msg.token].username;
-      const cur_secret = users[msg.token].secret;
-      delete users[msg.token];
-      const newToken = genToken();
-      users[newToken] = { username: cur_username, secret: cur_secret };
-      users[newToken].secret = cur_secret;
-      fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      send(socket, { type: "DATA", DATA: `[SERVER] Token refreshed. New token:\n${newToken}\nAgain DO NOT share your token with ANYONE` });
-      console.log(`Retokened ${users[newToken].username}.`);
-      socket.end();
-      return;}
+		if (msg.type === "RETOKEN") {
+			if (typeof msg.token !== "string" || !users[msg.token]) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
+				socket.destroy();
+				return;}
+			if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+				socket.destroy();
+				return;}
+			const cur_username = users[msg.token].username;
+			const cur_secret = users[msg.token].secret;
+			delete users[msg.token];
+			const newToken = genToken();
+			users[newToken] = { username: cur_username, secret: cur_secret };
+			users[newToken].secret = cur_secret;
+			fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
+			send(socket, { type: "DATA", DATA: `[SERVER] Token refreshed. New token:\n${newToken}\nAgain DO NOT share your token with ANYONE` });
+			console.log(`Retokened ${users[newToken].username}.`);
+			socket.destroy();
+			return;}
 
-    if (msg.type === "DELETE") {
-      if (!users[msg.token]) {
-        send(socket, { type: "DATA", DATA: "[SERVER] User doesn't exist." });
-        socket.end();
-        return;}
-     if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
-        socket.end();
-        return;}
-      const username = users[msg.token].username;
-      delete users[msg.token];
-      send(socket, { type: "DATA", DATA: `[SERVER] Successfully deleted ${username}` });
-      console.log(`Deleted ${username}.`)
-      fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
-      socket.end();
-      return;}
+		if (msg.type === "REOTP") {
+			if (!msg.token || !users[msg.token]) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Missing/Invalid token."});
+				socket.destroy();
+				return;
+			}
+			if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret})) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Missing/Wrong OTP."})
+			}
+			const newSecret = authenticator.generateSecret();
+			users[msg.token].secret = newSecret;
+			fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
+			send(socket, { type: "DATA", DATA: `[SERVER] Refreshed OTP secret. New secret:\n${newSecret}\nDo not share with anyone unless you want you second layer of security broken.`})
+			console.log(`ReOTPed ${users[msg.token].username}.`)
+			socket.destroy();
+			return;
+		}
 
-    if (state === "INIT") {
-      if (!msg.code || !msg.token) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Missing token/otp" });
-        socket.end();
-        return;}
-      if (msg.type !== "HELLO" || typeof msg.token !== "string") {
-        send(socket, { type: "DATA", DATA: "[SERVER] Don't be so rude, atleast say HELLO first!" })
-        socket.end();
-        return;}
-      if (!users[msg.token]) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
-        socket.end();
-        return;}
-      if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
-        send(socket, { type: "DATA", DATA: "[SERVER] Wrong OTP." });
-        socket.end();
-        return;}
-      user = users[msg.token].username;
-      state = "READY";
-      clients.add(socket);
-      send(socket, { type: "DATA", DATA: `[SERVER] You've successfully authenticated as ${user}` });
-      broadcast(`[SERVER] ${user} went online.`);
-      startKeepAliveFor(socket);
-      return;}
+		if (msg.type === "DELETE") {
+			if (!users[msg.token]) {
+				send(socket, { type: "DATA", DATA: "[SERVER] User doesn't exist." });
+				socket.destroy();
+				return;}
+		 if (!msg.code || !authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Wrong/Missing OTP." });
+				socket.destroy();
+				return;}
+			const username = users[msg.token].username;
+			delete users[msg.token];
+			send(socket, { type: "DATA", DATA: `[SERVER] Successfully deleted ${username}` });
+			console.log(`Deleted ${username}.`)
+			fs.writeFileSync("./users.json", JSON.stringify(users, null, 2));
+			socket.destroy();
+			return;}
 
-    if (msg.type === "PONG") {
-      if (socket._pong) socket._pong();
-      return;}
+		if (state === "INIT") {
+			if (msg.type !== "HELLO" || typeof msg.token !== "string") {
+				send(socket, { type: "DATA", DATA: "[SERVER] Don't be so rude, atleast say HELLO!" })
+				socket.destroy();
+				return;}
+			if (!msg.code || !msg.token) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Missing token/otp" });
+				socket.destroy();
+				return;}
+			if (!users[msg.token]) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Invalid token." });
+				socket.destroy();
+				return;}
+			if (!authenticator.verify({ token: msg.code, secret: users[msg.token].secret })) {
+				send(socket, { type: "DATA", DATA: "[SERVER] Wrong OTP." });
+				socket.destroy();
+				return;}
+			user = users[msg.token].username;
+			state = "READY";
+			clients.add(socket);
+			send(socket, { type: "DATA", DATA: `[SERVER] You've successfully authenticated as ${user}` });
+			broadcast(`[SERVER] ${user} went online.`);
+			startKeepAliveFor(socket);
+			return;}
 
-    if (msg.type === "DATA") {
-      broadcast(`${user}: ${msg.DATA}`);
-      return;}
+		if (msg.type === "PONG") {
+			if (socket._pong) socket._pong();
+			return;}
 
-    if (msg.type === "CLOSE") {
-      clients.delete(socket)
-      broadcast(`[SERVER] ${user} went offline.`);
-      socket.end();}
-  }
+		if (msg.type === "DATA") {
+			broadcast(`${user}: ${msg.DATA}`);
+			return;}
+
+		if (msg.type === "CLOSE") {
+			clients.delete(socket)
+			broadcast(`[SERVER] ${user} went offline.`);
+			socket.destroy();}
+	}
 });
 
 updateUserList()
